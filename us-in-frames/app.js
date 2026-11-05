@@ -16,6 +16,7 @@
   let previousFocus = null;
   let channel = null;
   let loading = false;
+  let loadAgain = false;
   let activeUserId = null;
   let refreshTimer;
 
@@ -63,21 +64,26 @@
       item.addEventListener('click', () => openViewer(photo.id, item));
       gallery.append(item);
     });
+    if (viewer.classList.contains('open')) updateViewerPhoto();
   }
 
   async function loadLibrary() {
-    if (loading) return;
+    if (!activeUserId) return;
+    if (loading) { loadAgain = true; return; }
+    const ownerId = activeUserId;
     loading = true;
     setSyncState('Syncing…');
     try {
-      const { data, error } = await client.from(TABLE).select('id, storage_path, caption, created_at').order('created_at', { ascending: false });
+      const { data, error } = await client.from(TABLE).select('id, user_id, storage_path, caption, created_at').eq('user_id', ownerId).order('created_at', { ascending: false });
       if (error) throw error;
       if (!data.length) {
+        if (activeUserId !== ownerId) return;
         photos = [];
       } else {
         const paths = data.map(row => row.storage_path);
         const { data: signed, error: signError } = await client.storage.from(BUCKET).createSignedUrls(paths, SIGNED_URL_SECONDS);
         if (signError) throw signError;
+        if (activeUserId !== ownerId) return;
         const signedByPath = new Map((signed || []).map(item => [item.path, item.signedUrl]));
         photos = data.map(row => ({ ...row, signedUrl: signedByPath.get(row.storage_path) })).filter(photo => photo.signedUrl);
         if (photos.length !== data.length) console.error('Some images could not be signed; check Storage policies and object paths.');
@@ -85,11 +91,16 @@
       render();
       setSyncState('Synced');
     } catch (error) {
+      if (activeUserId !== ownerId) return;
       console.error('Unable to sync photo library:', error);
       setSyncState('Sync unavailable');
       flash(`Could not load the shared library: ${error.message || 'check your connection and Supabase policies'}`);
     } finally {
       loading = false;
+      if (loadAgain) {
+        loadAgain = false;
+        if (activeUserId) void loadLibrary();
+      }
     }
   }
 
@@ -98,25 +109,71 @@
     previousFocus = focus || document.activeElement;
     const photo = photos.find(item => item.id === id);
     if (!photo) return;
+    viewer.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    updateViewerPhoto();
+    $('closeViewer').focus();
+  }
+
+  function updateViewerPhoto() {
+    const index = photos.findIndex(item => item.id === selectedId);
+    if (index < 0) {
+      closeViewer();
+      return false;
+    }
+    const photo = photos[index];
     $('viewerImage').src = photo.signedUrl;
     $('viewerImage').alt = photo.caption || 'Selected photograph';
     $('viewerCaption').textContent = photo.caption || 'No caption yet.';
-    viewer.classList.add('open');
-    document.body.style.overflow = 'hidden';
-    $('closeViewer').focus();
+    $('viewerCounter').textContent = `${index + 1} / ${photos.length}`;
+    return true;
+  }
+
+  function navigateViewer(direction) {
+    if (!viewer.classList.contains('open') || !photos.length) return;
+    const currentIndex = photos.findIndex(item => item.id === selectedId);
+    const startIndex = currentIndex < 0 ? 0 : currentIndex;
+    const nextIndex = (startIndex + direction + photos.length) % photos.length;
+    selectedId = photos[nextIndex].id;
+    updateViewerPhoto();
   }
 
   function closeViewer() {
     viewer.classList.remove('open');
     document.body.style.overflow = '';
     selectedId = null;
+    swipeStart = null;
+    $('viewerImage').removeAttribute('src');
+    $('viewerCounter').textContent = '';
     if (previousFocus?.isConnected) previousFocus.focus();
   }
 
+  $('previousPhoto').addEventListener('click', () => navigateViewer(-1));
+  $('nextPhoto').addEventListener('click', () => navigateViewer(1));
+
+  let swipeStart = null;
+  $('viewerImage').addEventListener('touchstart', event => {
+    const touch = event.changedTouches[0];
+    swipeStart = { x: touch.clientX, y: touch.clientY };
+  }, { passive: true });
+  $('viewerImage').addEventListener('touchend', event => {
+    if (!swipeStart) return;
+    if (!viewer.classList.contains('open')) { swipeStart = null; return; }
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - swipeStart.x;
+    const deltaY = touch.clientY - swipeStart.y;
+    swipeStart = null;
+    if (Math.abs(deltaX) < 45 || Math.abs(deltaX) < Math.abs(deltaY) * 1.2) return;
+    navigateViewer(deltaX < 0 ? 1 : -1);
+  }, { passive: true });
+
   function subscribeToLibrary() {
     if (channel) client.removeChannel(channel);
+    const ownerId = activeUserId;
     channel = client.channel('shared-photo-library')
-      .on('postgres_changes', { event: '*', schema: 'public', table: TABLE }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: TABLE, filter: `user_id=eq.${ownerId}` }, payload => {
+        const changedUserId = payload.new?.user_id ?? payload.old?.user_id;
+        if (activeUserId !== ownerId || changedUserId !== ownerId) return;
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(loadLibrary, 250);
       })
@@ -126,64 +183,11 @@
       });
   }
 
-  function openLegacyDatabase() {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open('us-in-frames', 1);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-      request.onblocked = () => reject(new Error('The existing photo database is busy. Close other library tabs and retry.'));
-    });
-  }
-
-  async function readLegacyPhotos() {
-    if (!('indexedDB' in window)) return [];
-    let legacyDb;
-    try { legacyDb = await openLegacyDatabase(); }
-    catch (error) {
-      if (error.name === 'NotFoundError') return [];
-      throw error;
-    }
-    if (!legacyDb.objectStoreNames.contains('photos')) { legacyDb.close(); return []; }
-    const result = await new Promise((resolve, reject) => {
-      const request = legacyDb.transaction('photos', 'readonly').objectStore('photos').getAll();
-      request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error);
-    });
-    legacyDb.close();
-    return result;
-  }
-
-  async function migrateLegacyPhotos() {
-    let localPhotos;
-    try { localPhotos = await readLegacyPhotos(); }
-    catch (error) { console.warn('Could not read the legacy local photo library:', error); return; }
-    if (!localPhotos.length) return;
-    const { data: existing, error } = await client.from(TABLE).select('id');
+  async function authenticatedUserId() {
+    const { data, error } = await client.auth.getUser();
     if (error) throw error;
-    const known = new Set(existing.map(row => row.id));
-    const handledLocalIds = new Set();
-    let migrated = 0;
-    for (const oldPhoto of localPhotos) {
-      if (known.has(oldPhoto.id)) { handledLocalIds.add(oldPhoto.id); continue; }
-      const blob = oldPhoto.image instanceof Blob ? oldPhoto.image : oldPhoto.image?.blob;
-      if (!(blob instanceof Blob)) { console.warn(`Skipping legacy photo ${oldPhoto.id}: image data is missing.`); continue; }
-      const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(oldPhoto.id) ? oldPhoto.id : crypto.randomUUID();
-      const extension = (blob.type.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
-      const path = `${id}/legacy.${extension}`;
-      const { error: uploadError } = await client.storage.from(BUCKET).upload(path, blob, { contentType: blob.type || 'image/jpeg', upsert: false });
-      if (uploadError) { console.error('Legacy photo upload failed:', uploadError); continue; }
-      const { error: insertError } = await client.from(TABLE).insert({ id, storage_path: path, caption: oldPhoto.caption || '', created_at: new Date(oldPhoto.createdAt || Date.now()).toISOString() });
-      if (insertError) {
-        await client.storage.from(BUCKET).remove([path]);
-        console.error('Legacy photo metadata migration failed:', insertError);
-        continue;
-      }
-      known.add(id);
-      handledLocalIds.add(oldPhoto.id);
-      migrated++;
-    }
-    if (migrated) flash(`${migrated} existing ${migrated === 1 ? 'photo was' : 'photos were'} copied to the shared library.`);
-    if (handledLocalIds.size < localPhotos.length) flash('Some older photos could not be migrated. Their local copies remain in this browser.');
+    if (!data.user || data.user.id !== activeUserId) throw new Error('Your sign-in changed. Reload the page and sign in again.');
+    return data.user.id;
   }
 
   $('signOut').addEventListener('click', async () => {
@@ -209,13 +213,15 @@
     button.textContent = 'Uploading…';
     let uploaded = 0;
     try {
+      const userId = await authenticatedUserId();
       for (const file of files) {
+        if (activeUserId !== userId) throw new Error('Your sign-in changed during upload. Reload and try again.');
         const id = crypto.randomUUID();
         const extension = (file.name.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'jpg';
-        const path = `${id}/original.${extension}`;
+        const path = `${userId}/${id}.${extension}`;
         const { error: uploadError } = await client.storage.from(BUCKET).upload(path, file, { contentType: file.type, upsert: false });
         if (uploadError) throw uploadError;
-        const { error: insertError } = await client.from(TABLE).insert({ id, storage_path: path, caption: '', created_at: new Date().toISOString() });
+        const { error: insertError } = await client.from(TABLE).insert({ id, user_id: userId, storage_path: path, caption: '', created_at: new Date().toISOString() });
         if (insertError) {
           await client.storage.from(BUCKET).remove([path]);
           throw insertError;
@@ -250,8 +256,10 @@
     const photo = photos.find(item => item.id === selectedId);
     if (!photo) return;
     const caption = captionInput.value.trim();
-    const { error } = await client.from(TABLE).update({ caption }).eq('id', photo.id);
+    const ownerId = activeUserId;
+    const { error } = await client.from(TABLE).update({ caption }).eq('id', photo.id).eq('user_id', ownerId);
     if (error) { console.error('Caption update failed:', error); flash(`Could not save caption: ${error.message}`); return; }
+    if (activeUserId !== ownerId) return;
     photo.caption = caption;
     render();
     $('viewerCaption').textContent = caption || 'No caption yet.';
@@ -265,9 +273,12 @@
     const button = $('deletePhoto');
     button.disabled = true;
     try {
-      const { error: rowError } = await client.from(TABLE).delete().eq('id', photo.id);
+      const userId = await authenticatedUserId();
+      if (photo.user_id !== userId || !photo.storage_path.startsWith(`${userId}/`)) throw new Error('This photo is not in the current user’s library.');
+      const { error: rowError } = await client.from(TABLE).delete().eq('id', photo.id).eq('user_id', userId);
       if (rowError) throw rowError;
       const { error: objectError } = await client.storage.from(BUCKET).remove([photo.storage_path]);
+      if (activeUserId !== userId) return;
       photos = photos.filter(item => item.id !== photo.id);
       render();
       closeViewer();
@@ -286,6 +297,9 @@
     if (event.key === 'Escape') {
       if (captionDialog.classList.contains('open')) { captionDialog.classList.remove('open'); $('editCaption').focus(); }
       else if (viewer.classList.contains('open')) closeViewer();
+    } else if (viewer.classList.contains('open') && !captionDialog.classList.contains('open')) {
+      if (event.key === 'ArrowLeft') { event.preventDefault(); navigateViewer(-1); }
+      else if (event.key === 'ArrowRight') { event.preventDefault(); navigateViewer(1); }
     }
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && client) loadLibrary(); });
@@ -293,18 +307,28 @@
   async function handleAuth(session) {
     if (!session) {
       activeUserId = null;
-      if (channel) { await client.removeChannel(channel); channel = null; }
+      document.body.classList.add('auth-checking');
       photos = [];
+      render();
+      if (viewer.classList.contains('open')) closeViewer();
+      $('viewerImage').removeAttribute('src');
+      if (channel) { await client.removeChannel(channel); channel = null; }
       window.location.replace('./login.html');
       return;
     }
     if (activeUserId === session.user.id) return;
+    if (activeUserId && activeUserId !== session.user.id) {
+      photos = [];
+      render();
+      if (viewer.classList.contains('open')) closeViewer();
+      $('viewerImage').removeAttribute('src');
+      if (channel) { await client.removeChannel(channel); channel = null; }
+    }
     activeUserId = session.user.id;
     document.body.classList.remove('auth-checking');
     $('signOut').hidden = false;
     $('addPhotos').disabled = false;
     try {
-      await migrateLegacyPhotos();
       await loadLibrary();
       subscribeToLibrary();
     } catch (error) {
