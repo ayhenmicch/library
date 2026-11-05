@@ -1,0 +1,4 @@
+window.SUPABASE_CONFIG = {
+  NEXT_PUBLIC_SUPABASE_URL: "https://YOUR_PROJECT_ID.supabase.co",
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_YOUR_KEY"
+};
