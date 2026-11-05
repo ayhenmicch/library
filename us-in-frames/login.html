@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f4ef">
+  <title>Sign in — Us, in Frames</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Playfair+Display:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet">
+  <style>
+    :root{color-scheme:light;--paper:#f6f4ef;--ink:#282720;--muted:#77756c;--line:#dedbd2;--accent:#8b6f58;--white:#fffefa}
+    *{box-sizing:border-box}body{min-height:100vh;margin:0;background:var(--paper);color:var(--ink);font-family:'DM Sans',sans-serif;-webkit-font-smoothing:antialiased;display:flex;flex-direction:column}
+    header{width:100%;padding:26px 5.5vw 22px;border-bottom:1px solid var(--line)}.brand{font:600 21px 'Playfair Display',serif;letter-spacing:-.4px}.brand em{font-weight:500;color:var(--accent)}
+    main{width:min(100% - 36px,410px);margin:auto;padding:64px 0}.eyebrow{color:var(--muted);font-size:10px;letter-spacing:.15em;text-transform:uppercase;margin:0 0 12px}h1{font:500 clamp(36px,8vw,48px)/1.1 'Playfair Display',serif;letter-spacing:-1px;margin:0 0 12px}.intro{font:italic 16px/1.6 'Playfair Display',serif;color:var(--muted);margin:0 0 32px}
+    form{border-top:1px solid var(--line);padding-top:24px}label{display:block;font-size:12px;margin:0 0 7px}input{width:100%;padding:13px;border:1px solid var(--line);background:var(--white);color:var(--ink);font:14px 'DM Sans',sans-serif;margin:0 0 18px}input:focus{outline:2px solid var(--accent);outline-offset:1px}button{width:100%;border:1px solid var(--ink);background:var(--ink);color:var(--paper);padding:13px 16px;font:500 12px 'DM Sans',sans-serif;letter-spacing:.04em;cursor:pointer}button:disabled{opacity:.58;cursor:wait}.error{min-height:1.4em;margin:14px 0 0;color:#9b3d32;font-size:12px;line-height:1.5}.state{margin-top:14px;color:var(--muted);font-size:12px;line-height:1.5}.state:empty{display:none}
+    footer{text-align:center;padding:22px;color:#96938a;font-size:10px;letter-spacing:.14em}@media(max-width:600px){header{padding:21px 6vw}main{padding:48px 0}}
+  </style>
+</head>
+<body>
+  <header><div class="brand">Us, <em>in Frames.</em></div></header>
+  <main>
+    <p class="eyebrow">A private photo library</p>
+    <h1>Welcome back.</h1>
+    <p class="intro">Sign in to see the moments we keep.</p>
+    <form id="loginForm" novalidate>
+      <label for="emailInput">Email</label>
+      <input id="emailInput" name="email" type="email" autocomplete="username" required>
+      <label for="passwordInput">Password</label>
+      <input id="passwordInput" name="password" type="password" autocomplete="current-password" required>
+      <button id="loginButton" type="submit">Sign in</button>
+      <p class="error" id="authError" role="alert" aria-live="assertive"></p>
+      <p class="state" id="authState" role="status" aria-live="polite"></p>
+    </form>
+  </main>
+  <footer>JUST OUR MOMENTS, KEPT HERE.</footer>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./supabase-config.js"></script>
+  <script src="./supabase-client.js"></script>
+  <script src="./login.js" defer></script>
+</body>
+</html>
